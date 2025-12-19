@@ -1,0 +1,12 @@
+version: '3.7'
+
+services:
+  pihole-dhcp-controller:
+    container_name: pihole-dhcp-controller
+    build: .
+    restart: unless-stopped
+    
+    # Carica le variabili di configurazione dal file .env
+    # Assicurati di aver creato un file .env (copiandolo da .env.example)
+    # e di averlo compilato con i tuoi dati.
+    env_file: .env
