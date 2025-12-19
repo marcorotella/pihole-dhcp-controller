@@ -68,33 +68,44 @@ def check_host_status(pihole: PiholeInstance) -> bool:
         return False
 
 def set_dhcp_status(pihole: PiholeInstance, enable: bool):
-    """Enables or disables DHCP on a specific Pi-hole instance."""
+    """Enables or disables DHCP on a specific Pi-hole instance using the new API (v6.0+)."""
     if not pihole.is_online:
-        logging.info(f"SKIP: {pihole.name} is offline, cannot change DHCP status.")
+        logging.info(f"SKIP: {pihole.name} is offline, cannot change DHCP status via new API.")
         return
 
-    action = "enable" if enable else "disable"
+    action_status = "enabled" if enable else "disabled"
     
     base_url = pihole.ip
     if not base_url.startswith(('http://', 'https://')):
         base_url = 'http://' + base_url
 
-    url = f"{base_url.rstrip('/')}/admin/api.php"
+    url = f"{base_url.rstrip('/')}/api/v6/config" # New API endpoint
     
+    headers = {
+        "X-Api-Key": pihole.token, # Authentication via header
+        "Content-Type": "application/json"
+    }
+
+    payload = { # JSON payload for PATCH request
+        "dhcp_server": {
+            "enabled": enable
+        }
+    }
+
     try:
-        # State-changing actions must use POST
-        post_data = {"auth": pihole.token, action: "dhcp"}
-        response = requests.post(url, data=post_data, timeout=10)
+        logging.info(f"Attempting to set DHCP on {pihole.name} ({pihole.ip}) to {action_status} via new API...")
+        response = requests.patch(url, headers=headers, json=payload, timeout=10) # Changed to PATCH and 'json'
         response.raise_for_status()
         
         data = response.json()
-        if data.get("status") == f"dhcp_{action}d":
-            logging.info(f"SUCCESS: DHCP {action}d on {pihole.name} ({pihole.ip}).")
+        # The new API response might be different, typically returns the updated config or status
+        if data.get("dhcp_server", {}).get("enabled") == enable:
+            logging.info(f"SUCCESS: DHCP on {pihole.name} ({pihole.ip}) set to {action_status} via new API.")
         else:
-            logging.info(f"INFO: DHCP status on {pihole.name} may already be {action}d. API response: {data}")
+            logging.info(f"INFO: DHCP status on {pihole.name} may already be {action_status} or API response unexpected. API response: {data}")
             
     except (requests.exceptions.RequestException, ValueError) as e:
-        logging.error(f"ERROR: Could not change DHCP status on {pihole.name}. Error: {e}")
+        logging.error(f"ERROR: Could not change DHCP status on {pihole.name} via new API. Error: {e}")
 
 def main_loop():
     """Main loop that orchestrates the DHCP status of the servers."""
