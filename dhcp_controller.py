@@ -12,13 +12,14 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class PiholeInstance:
-    """A mutable class to hold the state of a Pi-hole instance, including the session ID."""
+    """A mutable class to hold the state of a Pi-hole instance, including its session object."""
     def __init__(self, name: str, ip: str, token: str):
         self.name = name
         self.ip = ip
         self.token = token  # This is the web password
         self.is_online = False
-        self.sid: Optional[str] = None
+        self.session = requests.Session() # Use a session object to handle cookies
+        self.csrf: Optional[str] = None
 
 def get_config() -> List[PiholeInstance]:
     """Retrieves and validates the configuration from the environment."""
@@ -50,14 +51,15 @@ def get_config() -> List[PiholeInstance]:
 CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '60'))
 
 def check_host_status(pihole: PiholeInstance) -> bool:
-    """Checks if a Pi-hole instance is reachable."""
+    """Checks if a Pi-hole instance is reachable using its session."""
     base_url = pihole.ip
     if not base_url.startswith(('http://', 'https://')):
         base_url = 'http://' + base_url
     
     final_url = f"{base_url.rstrip('/')}/admin/"
     try:
-        requests.get(final_url, timeout=5).raise_for_status()
+        # Use the instance's session object for the request
+        pihole.session.get(final_url, timeout=5).raise_for_status()
         pihole.is_online = True
         logging.info(f"OK: {pihole.name} ({pihole.ip}) is online.")
         return True
@@ -67,7 +69,7 @@ def check_host_status(pihole: PiholeInstance) -> bool:
         return False
 
 def authenticate(pihole: PiholeInstance) -> bool:
-    """Authenticates with a Pi-hole instance to get and store a session ID (SID)."""
+    """Authenticates with a Pi-hole instance to establish a session and get a CSRF token."""
     if not pihole.is_online:
         return False
 
@@ -76,21 +78,25 @@ def authenticate(pihole: PiholeInstance) -> bool:
     auth_payload = {"password": pihole.token}
     
     try:
-        logging.info(f"Authenticating with {pihole.name} to get session ID...")
-        auth_resp = requests.post(auth_url, json=auth_payload, timeout=10)
+        logging.info(f"Authenticating with {pihole.name} to establish session...")
+        # Use the session object; it will store the cookie automatically
+        auth_resp = pihole.session.post(auth_url, json=auth_payload, timeout=10)
         auth_resp.raise_for_status()
         
-        sid = auth_resp.json().get("session", {}).get("sid")
-        if not sid:
-            logging.error(f"Authentication response from {pihole.name} did not contain a valid 'sid'. Full response: {auth_resp.json()}")
+        session_data = auth_resp.json().get("session", {})
+        csrf = session_data.get("csrf")
+
+        if not csrf:
+            logging.error(f"Authentication response from {pihole.name} did not contain CSRF token. Full response: {auth_resp.json()}")
             return False
         
-        pihole.sid = sid
-        logging.info(f"Successfully obtained and stored new session ID for {pihole.name}.")
+        pihole.csrf = csrf
+        logging.info(f"Successfully established session and stored CSRF token for {pihole.name}.")
         return True
     except requests.exceptions.RequestException as e:
         logging.error(f"ERROR: Authentication request failed for {pihole.name}. Error: {e}")
-        pihole.sid = None
+        pihole.csrf = None
+        pihole.session.cookies.clear()
         return False
 
 def set_dhcp_status(pihole: PiholeInstance, enable: bool):
@@ -98,8 +104,8 @@ def set_dhcp_status(pihole: PiholeInstance, enable: bool):
     if not pihole.is_online:
         return
 
-    # Authenticate only if we don't have a session ID
-    if not pihole.sid:
+    # Authenticate only if we don't have a CSRF token (which implies no valid session)
+    if not pihole.csrf:
         if not authenticate(pihole):
             logging.error(f"Cannot set DHCP status for {pihole.name} due to authentication failure.")
             return
@@ -109,26 +115,28 @@ def set_dhcp_status(pihole: PiholeInstance, enable: bool):
     config_url = f"{base_url}/api/config?restart=true"
     
     headers = {
-        "X-Api-Key": pihole.sid,
+        "X-CSRF-Token": pihole.csrf,
         "Content-Type": "application/json",
         "Accept": "application/json"
     }
     config_payload = {"config": {"dhcp": {"active": enable}}}
 
     try:
-        logging.info(f"Attempting to set DHCP on {pihole.name} to {action_status} using session ID...")
-        response = requests.patch(config_url, headers=headers, json=config_payload, timeout=15)
+        logging.info(f"Attempting to set DHCP on {pihole.name} to {action_status} using session...")
+        # Use the session object, which now contains the necessary cookies
+        response = pihole.session.patch(config_url, headers=headers, json=config_payload, timeout=15)
         response.raise_for_status()
         
         if response.json().get("success"):
             logging.info(f"SUCCESS: DHCP on {pihole.name} set to {action_status}.")
         else:
-            logging.warning(f"INFO: API call succeeded but did not report success. API response: {response.json()}")
+            logging.warning(f"INFO: API call to {pihole.name} succeeded but did not report success. API response: {response.json()}")
 
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 401:
-            logging.warning(f"Session ID for {pihole.name} has expired. Will re-authenticate on the next cycle.")
-            pihole.sid = None # Invalidate the SID
+            logging.warning(f"Session for {pihole.name} has expired. Invalidating session. Will re-authenticate on the next cycle.")
+            pihole.csrf = None
+            pihole.session.cookies.clear()
         else:
             logging.error(f"ERROR: Could not change DHCP status on {pihole.name}. Error: {e}")
     except (requests.exceptions.RequestException, ValueError) as e:
@@ -143,11 +151,9 @@ def main_loop():
     while True:
         logging.info("--- Starting new check cycle ---")
         
-        # 1. Check the status of all Pi-holes
         for p in piholes:
             check_host_status(p)
         
-        # 2. Determine which server should be the DHCP master
         active_dhcp_server = next((p for p in piholes if p.is_online), None)
         
         if active_dhcp_server:
@@ -155,7 +161,6 @@ def main_loop():
         else:
             logging.warning("WARNING: No Pi-hole is online. Cannot enable a DHCP server.")
 
-        # 3. Apply the decision
         for p in piholes:
             set_dhcp_status(p, enable=(p == active_dhcp_server))
         
