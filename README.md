@@ -1,84 +1,84 @@
 # Pi-hole DHCP Controller
 
-Questo progetto implementa un sistema di failover e failback centralizzato per la gestione del server DHCP su più istanze Pi-hole (due o tre). Il controllore monitora lo stato di salute di tutti i Pi-hole configurati e assicura che il server DHCP sia attivo solo sull'istanza di più alta priorità attualmente online, prevenendo conflitti di DHCP e garantendo la continuità del servizio.
+This project implements a centralized failover and failback system for managing the DHCP server across multiple Pi-hole instances (two or three). The controller monitors the health status of all configured Pi-holes and ensures that the DHCP server is active only on the highest-priority instance that is currently online, preventing DHCP conflicts and ensuring service continuity.
 
-## Funzionalità
+## Features
 
-*   **Controllo Centralizzato:** Un singolo servizio gestisce lo stato DHCP di tutte le tue istanze Pi-hole.
-*   **Logica di Failover Gerarchica:** Definisce una priorità tra i server (Primario > Secondario > Terziario). Il DHCP sarà attivo solo sul server di più alta priorità che è raggiungibile.
-*   **Failback Automatico:** Se un server di priorità più alta torna online, riprende automaticamente il ruolo di server DHCP, disabilitando il DHCP sugli altri server.
-*   **Supporto Flessibile (2 o 3 server):** Lo script rileva automaticamente se stai utilizzando due o tre server Pi-hole in base alla configurazione.
-*   **Configurazione Semplice:** Tutte le impostazioni sono gestite tramite un file `.env`.
-*   **Deploy con Docker Compose:** Facile da installare e gestire tramite Docker Compose su una VM dedicata.
+*   **Centralized Control:** A single service manages the DHCP status of all your Pi-hole instances.
+*   **Hierarchical Failover Logic:** Defines a priority among servers (Primary > Secondary > Tertiary). DHCP will only be active on the highest-priority server that is reachable.
+*   **Automatic Failback:** If a higher-priority server comes back online, it automatically resumes the role of the DHCP server, disabling DHCP on other servers.
+*   **Flexible Support (2 or 3 servers):** The script automatically detects whether you are using two or three Pi-hole servers based on your configuration.
+*   **Simple Configuration:** All settings are managed through a `.env` file.
+*   **Deploy with Docker Compose:** Easy to install and manage via Docker Compose on a dedicated VM.
 
-## Prerequisiti
+## Prerequisites
 
-*   **Docker e Docker Compose:** Installati sulla VM che ospiterà il servizio di controllo.
-*   **Istanze Pi-hole Funzionanti:** Tutti i Pi-hole devono essere configurati e accessibili via rete dalla VM del controllore.
-*   **API Token di Pi-hole:** Per ogni istanza Pi-hole che vuoi gestire, dovrai generare un token API dall'interfaccia di amministrazione (Settings > API / Web interface).
+*   **Docker and Docker Compose:** Installed on the VM that will host the controller service.
+*   **Functional Pi-hole Instances:** All Pi-holes must be configured and accessible over the network from the controller's VM.
+*   **Pi-hole API Tokens:** For each Pi-hole instance you want to manage, you will need to find its API token from the admin interface (Settings > API / Web interface).
 
-## Installazione e Configurazione
+## Installation and Configuration
 
-1.  **Clona il Repository:**
+1.  **Clone the Repository:**
     ```bash
     git clone https://github.com/marcorotella/pihole-dhcp-controller.git
     cd pihole-dhcp-controller
     ```
 
-2.  **Crea il file di configurazione `.env`:**
-    *   Copia il file `.env.example` in `.env`:
+2.  **Create the `.env` configuration file:**
+    *   Copy the `.env.example` file to `.env`:
         ```bash
         cp .env.example .env
         ```
-    *   Apri il file `.env` con un editor di testo e compila le variabili:
+    *   Open the `.env` file with a text editor and fill in the variables:
         ```ini
-        # --- Configurazione del Controllore DHCP per Pi-hole ---
+        # --- Pi-hole DHCP Controller Configuration ---
 
-        # Intervallo di controllo in secondi
+        # Check interval in seconds
         CHECK_INTERVAL=60
 
-        # --- Pi-hole Primario (Priorità 1 - Obbligatorio) ---
-        PRIMARY_PIHOLE_IP=IL_TUO_IP_PRIMARIO
-        PRIMARY_PIHOLE_TOKEN=IL_TUO_TOKEN_API_PRIMARIO
+        # --- Primary Pi-hole (Priority 1 - Required) ---
+        PRIMARY_PIHOLE_IP=YOUR_PRIMARY_IP
+        PRIMARY_PIHOLE_TOKEN=YOUR_PRIMARY_API_TOKEN
 
-        # --- Pi-hole Secondario (Priorità 2 - Obbligatorio) ---
-        SECONDARY_PIHOLE_IP=IL_TUO_IP_SECONDARIO
-        SECONDARY_PIHOLE_TOKEN=IL_TUO_TOKEN_API_SECONDARIO
+        # --- Secondary Pi-hole (Priority 2 - Required) ---
+        SECONDARY_PIHOLE_IP=YOUR_SECONDARY_IP
+        SECONDARY_PIHOLE_TOKEN=YOUR_SECONDARY_API_TOKEN
 
-        # --- Pi-hole Terziario (Priorità 3 - Opzionale) ---
-        # Lascia queste due variabili vuote o commentale per un setup a 2 server.
-        # Se compilate, lo script passerà automaticamente a una gestione a 3 server.
+        # --- Tertiary Pi-hole (Priority 3 - Optional) ---
+        # Leave these two variables empty or comment them out for a 2-server setup.
+        # If filled, the script will automatically switch to 3-server management.
         TERTIARY_PIHOLE_IP=
         TERTIARY_PIHOLE_TOKEN=
         ```
-    *   **Importante:** Assicurati di inserire gli IP corretti e i token API generati per ogni Pi-hole.
+    *   **Important:** Make sure to enter the correct IPs and API tokens for each Pi-hole.
 
-3.  **Avvia il Servizio con Docker Compose:**
-    *   Dalla stessa directory dove si trova `docker-compose.yml` ed `.env`, esegui:
+3.  **Start the Service with Docker Compose:**
+    *   From the same directory where `docker-compose.yml` and `.env` are located, run:
         ```bash
         docker-compose up -d --build
         ```
-    *   Questo comando costruirà l'immagine Docker (se non già presente o se ci sono modifiche) e avvierà il servizio in background.
+    *   This command will build the Docker image (if not already built or if there are changes) and start the service in the background.
 
-## Logica di Funzionamento
+## How It Works
 
-Il `dhcp_controller` esegue un ciclo di controllo ogni `CHECK_INTERVAL` secondi:
+The `dhcp_controller` runs a check cycle every `CHECK_INTERVAL` seconds:
 
-1.  **Verifica lo stato di tutti i Pi-hole:** Controlla la raggiungibilità di Primario, Secondario e Terziario (se configurato).
-2.  **Determina il Server DHCP Attivo:**
-    *   Se il **Primario** è online, sarà lui il server DHCP attivo.
-    *   Altrimenti, se il **Secondario** è online, sarà lui il server DHCP attivo.
-    *   Altrimenti, se il **Terziario** è online, sarà lui il server DHCP attivo.
-    *   Se nessun Pi-hole è online, nessun server DHCP sarà attivato.
-3.  **Applica le Modifiche:**
-    *   Abilita il DHCP sul server scelto come "attivo".
-    *   Disabilita il DHCP su tutti gli altri server online.
+1.  **Check the status of all Pi-holes:** It checks the reachability of the Primary, Secondary, and Tertiary (if configured) servers.
+2.  **Determine the Active DHCP Server:**
+    *   If the **Primary** is online, it will be the active DHCP server.
+    *   Otherwise, if the **Secondary** is online, it will be the active DHCP server.
+    *   Otherwise, if the **Tertiary** is online, it will be the active DHCP server.
+    *   If no Pi-hole is online, no DHCP server will be activated.
+3.  **Apply Changes:**
+    *   It enables DHCP on the server chosen as "active".
+    *   It disables DHCP on all other online servers.
 
-Questa logica garantisce che il servizio DHCP sia sempre gestito dal server di più alta priorità disponibile e permette un ripristino automatico del servizio sul server primario non appena torna online.
+This logic ensures that the DHCP service is always managed by the highest-priority available server and allows for automatic service restoration on the primary server as soon as it comes back online.
 
-## Monitoraggio
+## Monitoring
 
-Per monitorare il funzionamento del controllore e visualizzare i log in tempo reale:
+To monitor the controller's operation and view logs in real-time:
 
 ```bash
 docker-compose logs -f
