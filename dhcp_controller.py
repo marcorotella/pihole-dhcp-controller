@@ -12,21 +12,29 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class PiholeInstance:
-    """A mutable class to hold the state of a Pi-hole instance, including its session object."""
+    """A mutable class to hold the state of a Pi-hole instance, ensuring session reuse."""
     def __init__(self, name: str, ip: str, token: str):
         self.name = name
         self.ip = ip
-        self.token = token  # This is the web password
+        self.token = token  # Web interface password
         self.is_online = False
         self.session = requests.Session()
+        self.sid: Optional[str] = None
         self.csrf: Optional[str] = None
         
-        # Set a common Referer header for the session
+        # Prepare the base URL and Referer
         base_url = self.ip
         if not base_url.startswith(('http://', 'https://')):
             base_url = 'http://' + base_url
-        self.session.headers.update({"Referer": base_url.rstrip('/') + "/"})
-
+        self.base_url = base_url.rstrip('/')
+        self.referer = self.base_url + "/"
+        
+        # Set default headers for the session
+        self.session.headers.update({
+            "Referer": self.referer,
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        })
 
 def get_config() -> List[PiholeInstance]:
     """Retrieves and validates the configuration from the environment."""
@@ -36,7 +44,7 @@ def get_config() -> List[PiholeInstance]:
     secondary_token = os.getenv('SECONDARY_PIHOLE_TOKEN')
 
     if not all([primary_ip, primary_token, secondary_ip, secondary_token]):
-        logging.error("Error: Ensure that IP and Password are set for at least the PRIMARY and SECONDARY servers.")
+        logging.error("Error: Ensure that PRIMARY and SECONDARY IP/Password are set in .env")
         exit(1)
     
     piholes = [
@@ -49,124 +57,118 @@ def get_config() -> List[PiholeInstance]:
 
     if tertiary_ip and tertiary_token:
         piholes.append(PiholeInstance(name='Tertiary', ip=tertiary_ip, token=tertiary_token))
-        logging.info("Detected configuration for 3 servers (Primary, Secondary, Tertiary).")
+        logging.info("Configured for 3 Pi-hole instances.")
     else:
-        logging.info("Detected configuration for 2 servers (Primary, Secondary). Tertiary server is ignored.")
+        logging.info("Configured for 2 Pi-hole instances.")
 
     return piholes
 
-CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '60'))
-
 def check_host_status(pihole: PiholeInstance) -> bool:
-    """Checks if a Pi-hole instance is reachable using its session."""
-    final_url = f"{pihole.session.headers['Referer']}admin/"
+    """Checks reachability. Does not affect SID/CSRF state."""
     try:
-        pihole.session.get(final_url, timeout=5).raise_for_status()
+        url = f"{pihole.base_url}/admin/"
+        pihole.session.get(url, timeout=5).raise_for_status()
         pihole.is_online = True
-        logging.info(f"OK: {pihole.name} ({pihole.ip}) is online.")
+        logging.info(f"OK: {pihole.name} is online.")
         return True
-    except requests.exceptions.RequestException as e:
+    except requests.exceptions.RequestException:
         pihole.is_online = False
-        logging.warning(f"FAIL: {pihole.name} ({pihole.ip}) is not reachable. Error: {e}")
+        logging.warning(f"FAIL: {pihole.name} is unreachable.")
         return False
 
 def authenticate(pihole: PiholeInstance) -> bool:
-    """Authenticates with a Pi-hole instance to establish a session and get a CSRF token."""
+    """Gets SID and CSRF. Reuses session cookies."""
     if not pihole.is_online:
         return False
 
-    auth_url = f"{pihole.session.headers['Referer']}api/auth"
-    auth_payload = {"password": pihole.token}
+    auth_url = f"{pihole.base_url}/api/auth"
+    payload = {"password": pihole.token}
     
     try:
-        logging.info(f"Authenticating with {pihole.name} to establish session...")
-        # Use the session object; it will store the cookie automatically
-        auth_resp = pihole.session.post(auth_url, json=auth_payload, timeout=10)
-        auth_resp.raise_for_status()
+        logging.info(f"Authenticating with {pihole.name}...")
+        resp = pihole.session.post(auth_url, json=payload, timeout=10)
+        resp.raise_for_status()
         
-        session_data = auth_resp.json().get("session", {})
-        csrf = session_data.get("csrf")
+        data = resp.json().get("session", {})
+        sid = data.get("sid")
+        csrf = data.get("csrf")
 
-        if not csrf:
-            logging.error(f"Authentication response from {pihole.name} did not contain CSRF token. Full response: {auth_resp.json()}")
+        if not sid or not csrf:
+            logging.error(f"Auth failed for {pihole.name}: SID/CSRF missing. Response: {resp.json()}")
             return False
         
+        pihole.sid = sid
         pihole.csrf = csrf
-        logging.info(f"Successfully established session and stored CSRF token for {pihole.name}.")
+        logging.info(f"New session established for {pihole.name}.")
         return True
-    except requests.exceptions.RequestException as e:
-        logging.error(f"ERROR: Authentication request failed for {pihole.name}. Error: {e}")
-        pihole.csrf = None
-        pihole.session.cookies.clear()
+    except Exception as e:
+        logging.error(f"Auth error for {pihole.name}: {e}")
         return False
 
 def set_dhcp_status(pihole: PiholeInstance, enable: bool):
-    """Enables or disables DHCP, handling authentication and session reuse."""
+    """Sets DHCP status using persistent SID and CSRF."""
     if not pihole.is_online:
         return
 
-    # Authenticate only if we don't have a CSRF token (which implies no valid session)
-    if not pihole.csrf:
+    # Authenticate only if we don't have active tokens
+    if not pihole.sid or not pihole.csrf:
         if not authenticate(pihole):
-            logging.error(f"Cannot set DHCP status for {pihole.name} due to authentication failure.")
             return
 
-    action_status = "enabled" if enable else "disabled"
-    config_url = f"{pihole.session.headers['Referer']}api/config?restart=true"
+    action = "enabled" if enable else "disabled"
+    config_url = f"{pihole.base_url}/api/config?restart=true"
     
-    # The session object automatically sends the session cookie.
-    # We only need to provide the CSRF token in the headers.
+    # Headers MUST include both sid and X-CSRF-Token
     headers = {
-        "X-CSRF-Token": pihole.csrf,
-        "Content-Type": "application/json",
-        "Accept": "application/json"
+        "sid": pihole.sid,
+        "X-CSRF-Token": pihole.csrf
     }
-    config_payload = {"config": {"dhcp": {"active": enable}}}
+    payload = {"config": {"dhcp": {"active": enable}}}
 
     try:
-        logging.info(f"Attempting to set DHCP on {pihole.name} to {action_status} using session...")
-        response = pihole.session.patch(config_url, headers=headers, json=config_payload, timeout=15)
-        response.raise_for_status()
+        logging.info(f"Setting DHCP on {pihole.name} to {action}...")
+        resp = pihole.session.patch(config_url, headers=headers, json=payload, timeout=15)
+        resp.raise_for_status()
         
-        if response.json().get("success"):
-            logging.info(f"SUCCESS: DHCP on {pihole.name} set to {action_status}.")
+        if resp.json().get("success"):
+            logging.info(f"SUCCESS: {pihole.name} DHCP is now {action}.")
         else:
-            logging.warning(f"INFO: API call to {pihole.name} succeeded but did not report success. API response: {response.json()}")
+            logging.warning(f"Unexpected response from {pihole.name}: {resp.json()}")
 
     except requests.exceptions.HTTPError as e:
-        if e.response.status_code in [401, 403]: # Treat 401 or 403 as an expired session
-            logging.warning(f"Session for {pihole.name} has expired or is forbidden. Invalidating session. Will re-authenticate on the next cycle.")
+        # Invalidate only on actual auth errors to prevent session seat exhaustion
+        if e.response.status_code in [401, 403]:
+            logging.warning(f"Session for {pihole.name} rejected (401/403). Clearing tokens.")
+            pihole.sid = None
             pihole.csrf = None
             pihole.session.cookies.clear()
         else:
-            logging.error(f"ERROR: Could not change DHCP status on {pihole.name}. Error: {e}")
-    except (requests.exceptions.RequestException, ValueError) as e:
-        logging.error(f"ERROR: Could not change DHCP status on {pihole.name}. Error: {e}")
+            logging.error(f"HTTP error for {pihole.name}: {e}")
+    except Exception as e:
+        logging.error(f"Request error for {pihole.name}: {e}")
 
 def main_loop():
-    """Main loop that orchestrates the DHCP status of the servers."""
-    logging.info("DHCP controller service started.")
-    
+    logging.info("DHCP Controller started.")
     piholes = get_config()
+    check_interval = int(os.getenv('CHECK_INTERVAL', '60'))
 
     while True:
-        logging.info("--- Starting new check cycle ---")
-        
+        logging.info("--- Starting Check Cycle ---")
         for p in piholes:
             check_host_status(p)
         
-        active_dhcp_server = next((p for p in piholes if p.is_online), None)
+        # Decision logic: first online server gets DHCP
+        active_server = next((p for p in piholes if p.is_online), None)
         
-        if active_dhcp_server:
-            logging.info(f"DECISION: {active_dhcp_server.name} ({active_dhcp_server.ip}) will be the active DHCP server.")
+        if active_server:
+            logging.info(f"Active DHCP server should be: {active_server.name}")
+            for p in piholes:
+                set_dhcp_status(p, enable=(p == active_server))
         else:
-            logging.warning("WARNING: No Pi-hole is online. Cannot enable a DHCP server.")
-
-        for p in piholes:
-            set_dhcp_status(p, enable=(p == active_dhcp_server))
+            logging.warning("All servers offline. No DHCP action taken.")
         
-        logging.info(f"--- Check cycle complete. Next check in {CHECK_INTERVAL} seconds. ---")
-        time.sleep(CHECK_INTERVAL)
+        logging.info(f"--- Cycle complete. Sleeping {check_interval}s ---")
+        time.sleep(check_interval)
 
 if __name__ == "__main__":
     main_loop()
