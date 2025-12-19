@@ -18,8 +18,15 @@ class PiholeInstance:
         self.ip = ip
         self.token = token  # This is the web password
         self.is_online = False
-        self.session = requests.Session() # Use a session object to handle cookies
+        self.session = requests.Session()
         self.csrf: Optional[str] = None
+        
+        # Set a common Referer header for the session
+        base_url = self.ip
+        if not base_url.startswith(('http://', 'https://')):
+            base_url = 'http://' + base_url
+        self.session.headers.update({"Referer": base_url.rstrip('/') + "/"})
+
 
 def get_config() -> List[PiholeInstance]:
     """Retrieves and validates the configuration from the environment."""
@@ -52,13 +59,8 @@ CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '60'))
 
 def check_host_status(pihole: PiholeInstance) -> bool:
     """Checks if a Pi-hole instance is reachable using its session."""
-    base_url = pihole.ip
-    if not base_url.startswith(('http://', 'https://')):
-        base_url = 'http://' + base_url
-    
-    final_url = f"{base_url.rstrip('/')}/admin/"
+    final_url = f"{pihole.session.headers['Referer']}admin/"
     try:
-        # Use the instance's session object for the request
         pihole.session.get(final_url, timeout=5).raise_for_status()
         pihole.is_online = True
         logging.info(f"OK: {pihole.name} ({pihole.ip}) is online.")
@@ -73,13 +75,11 @@ def authenticate(pihole: PiholeInstance) -> bool:
     if not pihole.is_online:
         return False
 
-    base_url = pihole.ip.rstrip('/')
-    auth_url = f"{base_url}/api/auth"
+    auth_url = f"{pihole.session.headers['Referer']}api/auth"
     auth_payload = {"password": pihole.token}
     
     try:
         logging.info(f"Authenticating with {pihole.name} to establish session...")
-        # Use the session object; it will store the cookie automatically
         auth_resp = pihole.session.post(auth_url, json=auth_payload, timeout=10)
         auth_resp.raise_for_status()
         
@@ -104,16 +104,16 @@ def set_dhcp_status(pihole: PiholeInstance, enable: bool):
     if not pihole.is_online:
         return
 
-    # Authenticate only if we don't have a CSRF token (which implies no valid session)
     if not pihole.csrf:
         if not authenticate(pihole):
             logging.error(f"Cannot set DHCP status for {pihole.name} due to authentication failure.")
             return
 
     action_status = "enabled" if enable else "disabled"
-    base_url = pihole.ip.rstrip('/')
-    config_url = f"{base_url}/api/config?restart=true"
+    config_url = f"{pihole.session.headers['Referer']}api/config?restart=true"
     
+    # The session object already contains the Referer and session cookie.
+    # We only need to add the CSRF token for this specific request.
     headers = {
         "X-CSRF-Token": pihole.csrf,
         "Content-Type": "application/json",
@@ -123,7 +123,6 @@ def set_dhcp_status(pihole: PiholeInstance, enable: bool):
 
     try:
         logging.info(f"Attempting to set DHCP on {pihole.name} to {action_status} using session...")
-        # Use the session object, which now contains the necessary cookies
         response = pihole.session.patch(config_url, headers=headers, json=config_payload, timeout=15)
         response.raise_for_status()
         
@@ -133,8 +132,8 @@ def set_dhcp_status(pihole: PiholeInstance, enable: bool):
             logging.warning(f"INFO: API call to {pihole.name} succeeded but did not report success. API response: {response.json()}")
 
     except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 401:
-            logging.warning(f"Session for {pihole.name} has expired. Invalidating session. Will re-authenticate on the next cycle.")
+        if e.response.status_code in [401, 403]: # Treat 403 as an expired session too
+            logging.warning(f"Session for {pihole.name} has expired or is forbidden. Invalidating session. Will re-authenticate on the next cycle.")
             pihole.csrf = None
             pihole.session.cookies.clear()
         else:
