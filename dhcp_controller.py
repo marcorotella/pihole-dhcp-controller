@@ -80,6 +80,7 @@ def authenticate(pihole: PiholeInstance) -> bool:
     
     try:
         logging.info(f"Authenticating with {pihole.name} to establish session...")
+        # Use the session object; it will store the cookie automatically
         auth_resp = pihole.session.post(auth_url, json=auth_payload, timeout=10)
         auth_resp.raise_for_status()
         
@@ -104,6 +105,7 @@ def set_dhcp_status(pihole: PiholeInstance, enable: bool):
     if not pihole.is_online:
         return
 
+    # Authenticate only if we don't have a CSRF token (which implies no valid session)
     if not pihole.csrf:
         if not authenticate(pihole):
             logging.error(f"Cannot set DHCP status for {pihole.name} due to authentication failure.")
@@ -112,8 +114,8 @@ def set_dhcp_status(pihole: PiholeInstance, enable: bool):
     action_status = "enabled" if enable else "disabled"
     config_url = f"{pihole.session.headers['Referer']}api/config?restart=true"
     
-    # The session object already contains the Referer and session cookie.
-    # We only need to add the CSRF token for this specific request.
+    # The session object automatically sends the session cookie.
+    # We only need to provide the CSRF token in the headers.
     headers = {
         "X-CSRF-Token": pihole.csrf,
         "Content-Type": "application/json",
@@ -132,7 +134,7 @@ def set_dhcp_status(pihole: PiholeInstance, enable: bool):
             logging.warning(f"INFO: API call to {pihole.name} succeeded but did not report success. API response: {response.json()}")
 
     except requests.exceptions.HTTPError as e:
-        if e.response.status_code in [401, 403]: # Treat 403 as an expired session too
+        if e.response.status_code in [401, 403]: # Treat 401 or 403 as an expired session
             logging.warning(f"Session for {pihole.name} has expired or is forbidden. Invalidating session. Will re-authenticate on the next cycle.")
             pihole.csrf = None
             pihole.session.cookies.clear()
