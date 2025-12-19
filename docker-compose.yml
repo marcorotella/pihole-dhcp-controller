@@ -6,7 +6,7 @@ services:
     build: .
     restart: unless-stopped
     
-    # Carica le variabili di configurazione dal file .env
-    # Assicurati di aver creato un file .env (copiandolo da .env.example)
-    # e di averlo compilato con i tuoi dati.
+    # Load configuration variables from the .env file.
+    # Make sure you have created a .env file (by copying from .env.example)
+    # and filled it with your data.
     env_file: .env
