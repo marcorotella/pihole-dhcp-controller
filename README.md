@@ -1,6 +1,30 @@
 # Pi-hole DHCP Controller
 
-This project implements a centralized failover and failback system for managing the DHCP server across multiple Pi-hole instances (two or three). The controller monitors the health status of all configured Pi-holes and ensures that the DHCP server is active only on the highest-priority instance that is currently online, preventing DHCP conflicts and ensuring service continuity.
+## Motivation
+
+Pi-hole has become the cornerstone of my homelab's DNS infrastructure. To ensure maximum uptime, I transitioned to a High Availability (HA) cluster consisting of three Pi-hole instances:
+* **Two instances** running on separate nodes of my Proxmox cluster.
+* **A third instance** running on my Proxmox cluster's QDevice (Raspberry Pi).
+
+While keeping DNS synchronized across these nodes is relatively simple (using tools like Gravity Sync), achieving true HA for **DHCP** proved to be a much greater challenge. 
+
+### The Problem
+DNS HA is built into the protocol; you can push multiple DNS server IPs to clients, and they will automatically failover if one is unreachable. However, DHCP does not work this way. 
+1. **Redundancy vs. Conflict:** You cannot simply leave three DHCP servers active on the same subnet without risking IP conflicts and "race conditions" where clients receive unpredictable configurations.
+2. **The Single Point of Failure:** I migrated my DHCP service from my router to Pi-hole to gain better visibility and control. However, this created a new problem: if the primary Pi-hole instance (where the DHCP server lives) goes down for maintenance or due to a hardware failure, the entire network loses its DHCP service.
+
+### The Solution: A Priority-Based Controller
+I developed this application to act as the "brain" of the cluster. Instead of manual intervention, this controller monitors the availability of all 3 (or 2) Pi-hole instances and orchestrates the DHCP service based on a strict priority logic:
+**Primary → Secondary → Tertiary.**
+
+* **Intelligent Failover:** If the Primary node fails, the controller automatically enables the DHCP server on the Secondary node.
+* **Automatic Fallback:** As soon as a higher-priority node comes back online, the controller gracefully disables DHCP on the lower-priority node and restores the service to the preferred instance.
+
+### Project Status
+**Note:** This is a **pre-release**. 
+This tool was built to solve a specific need in my own network architecture. While it has been tested thoroughly in my environment, homelab setups vary wildly. I am sharing this with the community in hopes that others find it useful. 
+
+**Feedback, issue reports, and Pull Requests are highly encouraged!**
 
 ## Features
 
