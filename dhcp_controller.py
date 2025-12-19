@@ -52,8 +52,14 @@ CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '60'))
 
 def check_host_status(pihole: PiholeInstance) -> bool:
     """Checks if a Pi-hole instance is reachable."""
+    base_url = pihole.ip
+    if not base_url.startswith(('http://', 'https://')):
+        base_url = 'http://' + base_url
+    
+    final_url = f"{base_url.rstrip('/')}/admin/"
+
     try:
-        response = requests.get(f"http://{pihole.ip}/admin/", timeout=5)
+        response = requests.get(final_url, timeout=5)
         response.raise_for_status()
         logging.info(f"OK: {pihole.name} Pi-hole ({pihole.ip}) is online.")
         return True
@@ -68,7 +74,12 @@ def set_dhcp_status(pihole: PiholeInstance, enable: bool):
         return
 
     action = "enable" if enable else "disable"
-    url = f"http://{pihole.ip}/admin/api.php"
+    
+    base_url = pihole.ip
+    if not base_url.startswith(('http://', 'https://')):
+        base_url = 'http://' + base_url
+
+    url = f"{base_url.rstrip('/')}/admin/api.php"
     
     try:
         params = {"auth": pihole.token, action: "dhcp"}
