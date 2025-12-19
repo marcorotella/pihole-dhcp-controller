@@ -90,6 +90,7 @@ def set_dhcp_status(pihole: PiholeInstance, enable: bool):
         auth_resp.raise_for_status()
         sid = auth_resp.json().get("sid")
         if not sid:
+            logging.error(f"Authentication response JSON from {pihole.name} did not contain 'sid'. Full response: {auth_resp.json()}")
             raise ValueError("Session ID (SID) not found in authentication response.")
         logging.info(f"Successfully obtained session ID for {pihole.name}.")
     except (requests.exceptions.RequestException, ValueError) as e:
