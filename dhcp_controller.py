@@ -82,15 +82,16 @@ def set_dhcp_status(pihole: PiholeInstance, enable: bool):
     url = f"{base_url.rstrip('/')}/admin/api.php"
     
     try:
-        params = {"auth": pihole.token, action: "dhcp"}
-        response = requests.get(url, params=params, timeout=10)
+        # State-changing actions must use POST
+        post_data = {"auth": pihole.token, action: "dhcp"}
+        response = requests.post(url, data=post_data, timeout=10)
         response.raise_for_status()
         
         data = response.json()
         if data.get("status") == f"dhcp_{action}d":
             logging.info(f"SUCCESS: DHCP {action}d on {pihole.name} ({pihole.ip}).")
         else:
-            logging.info(f"INFO: DHCP status on {pihole.name} was already {action}d. No changes made.")
+            logging.info(f"INFO: DHCP status on {pihole.name} may already be {action}d. API response: {data}")
             
     except (requests.exceptions.RequestException, ValueError) as e:
         logging.error(f"ERROR: Could not change DHCP status on {pihole.name}. Error: {e}")
