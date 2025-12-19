@@ -68,7 +68,7 @@ def check_host_status(pihole: PiholeInstance) -> bool:
         return False
 
 def set_dhcp_status(pihole: PiholeInstance, enable: bool):
-    """Enables or disables DHCP on a specific Pi-hole instance using the Pi-hole v6.0+ API."""
+    """Enables or disables DHCP on a specific Pi-hole instance using session-based authentication."""
     if not pihole.is_online:
         logging.info(f"SKIP: {pihole.name} is offline, cannot change DHCP status.")
         return
@@ -78,39 +78,46 @@ def set_dhcp_status(pihole: PiholeInstance, enable: bool):
     base_url = pihole.ip
     if not base_url.startswith(('http://', 'https://')):
         base_url = 'http://' + base_url
+    base_url = base_url.rstrip('/')
 
-    # Correct endpoint with restart flag, without version prefix
-    url = f"{base_url.rstrip('/')}/api/config?restart=true"
-    
-    headers = {
-        "X-Api-Key": pihole.token,
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-    }
-
-    # Correct JSON payload structure
-    payload = {
-        "config": {
-            "dhcp": {
-                "active": enable
-            }
-        }
-    }
+    sid = None
+    try:
+        # Step 1: Authenticate to get a session ID (SID)
+        auth_url = f"{base_url}/api/auth"
+        auth_payload = {"password": pihole.token}
+        logging.info(f"Authenticating with {pihole.name} to get session ID...")
+        auth_resp = requests.post(auth_url, json=auth_payload, timeout=10)
+        auth_resp.raise_for_status()
+        sid = auth_resp.json().get("sid")
+        if not sid:
+            raise ValueError("Session ID (SID) not found in authentication response.")
+        logging.info(f"Successfully obtained session ID for {pihole.name}.")
+    except (requests.exceptions.RequestException, ValueError) as e:
+        logging.error(f"ERROR: Authentication failed for {pihole.name}. Error: {e}")
+        return
 
     try:
-        logging.info(f"Attempting to set DHCP on {pihole.name} to {action_status} with new payload structure...")
-        response = requests.patch(url, headers=headers, json=payload, timeout=15) # Increased timeout slightly
+        # Step 2: Use the SID to perform the action
+        config_url = f"{base_url}/api/config?restart=true"
+        headers = {
+            "X-Api-Key": sid,  # Use the session ID for authentication
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+        config_payload = {"config": {"dhcp": {"active": enable}}}
+
+        logging.info(f"Attempting to set DHCP on {pihole.name} to {action_status} using session ID...")
+        response = requests.patch(config_url, headers=headers, json=config_payload, timeout=15)
         response.raise_for_status()
         
         data = response.json()
-        # The new API should return a success message
         if data.get("success"):
             logging.info(f"SUCCESS: DHCP on {pihole.name} set to {action_status}.")
         else:
             logging.warning(f"INFO: API call succeeded but did not report success. API response: {data}")
-            
+
     except (requests.exceptions.RequestException, ValueError) as e:
-        logging.error(f"ERROR: Could not change DHCP status on {pihole.name}. Error: {e}")
+        logging.error(f"ERROR: Could not change DHCP status on {pihole.name} after authenticating. Error: {e}")
 
 def main_loop():
     """Main loop that orchestrates the DHCP status of the servers."""
