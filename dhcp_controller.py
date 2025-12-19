@@ -79,8 +79,8 @@ def set_dhcp_status(pihole: PiholeInstance, enable: bool):
     if not base_url.startswith(('http://', 'https://')):
         base_url = 'http://' + base_url
 
-    # Correct endpoint with restart flag
-    url = f"{base_url.rstrip('/')}/api/v6/config?restart=true"
+    # Correct endpoint with restart flag, without version prefix
+    url = f"{base_url.rstrip('/')}/api/config?restart=true"
     
     headers = {
         "X-Api-Key": pihole.token,
