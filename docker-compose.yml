@@ -1,5 +1,3 @@
-version: '3.7'
-
 services:
   pihole-dhcp-controller:
     container_name: pihole-dhcp-controller
